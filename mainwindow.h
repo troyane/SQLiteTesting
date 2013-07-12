@@ -4,6 +4,8 @@
 #include <QMainWindow>
 #include <QSqlDatabase>
 
+#include "performancetimer.h"
+
 class QSqlQuery;
 
 namespace Ui {
@@ -13,7 +15,6 @@ class MainWindow;
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
-    QSqlDatabase mWorkDb;
 public:
     explicit MainWindow(QWidget *parent = 0);
     ~MainWindow();
@@ -22,11 +23,15 @@ public:
     bool setDbJournalMode(QSqlDatabase& db,  const QString& mode);
     void readFromDb();
     void writeToDb();
+    void writeToDbOther();
     void startRace();
     void outpuQuery(QSqlQuery& query);
     volatile bool transInProcess;
 
 private:
+    PerformanceTimer time;
+    QSqlDatabase mWorkDb;
+
     Ui::MainWindow *ui;
 };
 

@@ -13,9 +13,11 @@ TEMPLATE = app
 
 
 SOURCES += main.cpp\
-        mainwindow.cpp
+        mainwindow.cpp \
+    performancetimer.cpp
 
 HEADERS  += mainwindow.h \
-    sleeperthread.h
+    sleeperthread.h \
+    performancetimer.h
 
 FORMS    += mainwindow.ui

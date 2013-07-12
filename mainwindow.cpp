@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include "sleeperthread.h"
+#include "performancetimer.h"
 
 #include <QDateTime>
 #include <QDebug>
@@ -29,6 +30,7 @@ MainWindow::MainWindow(QWidget *parent) :
     ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+    time.start();
     if (!prepareAndOpenDb()) {
         qDebug() << "Error while opening DB";
     }
@@ -54,11 +56,11 @@ bool MainWindow::prepareAndOpenDb()
         return false;
     }
 
-//    QString journalMode("OFF"); // default: "DELETE", "WAL"
-//    if (setDbJournalMode(mWorkDb, journalMode) )
-//    {
-//        qDebug() << "Sucessfuly switched to" << journalMode;
-//    }
+    QString journalMode("DELETE"); // default: "DELETE", "WAL"
+    if (setDbJournalMode(mWorkDb, journalMode) )
+    {
+        qDebug() << "Sucessfuly switched to" << journalMode;
+    }
 
     QStringList tables = mWorkDb.tables(QSql::Tables);
 
@@ -72,7 +74,11 @@ bool MainWindow::prepareAndOpenDb()
     } else {
         qDebug() << mWorkDb.databaseName() << "already has table" << tableName;
     }
-    QSqlQuery q(insertStartInfo, mWorkDb);
+//    QSqlQuery q(insertStartInfo, mWorkDb);
+//    q.exec("PRAGMA journal_mode");
+//    qDebug() << "PRAGMA:";
+//    outpuQuery(q);
+
     return true;
 }
 
@@ -86,17 +92,17 @@ bool MainWindow::setDbJournalMode(QSqlDatabase &db, const QString &mode)
 void MainWindow::readFromDb()
 {
     const int threadId = QThread::currentThreadId();
-    qDebug() << "READER:" << threadId;
+    qDebug("Readers thread: %10d", threadId);
 
     // wait for transaction in writer begins
     while (transInProcess==false)
     {
-        qDebug() << "  # Reader is waiting";
+        qDebug("\t# Reader is waiting, %10lld ns", time.elapsed());
         SleeperThread::msSleep(7);
     }
-    qDebug() << "# reader got transInProcess==true";
-    QString connectionName = QString ("Reader_%1").arg(threadId);
+    qDebug("\t# Reader got transInProcess==true");
 
+    QString connectionName = QString("Reader_%1").arg(threadId);
     QSqlDatabase readDb = QSqlDatabase::cloneDatabase(mWorkDb, connectionName);
 
     if (!readDb.open()) {
@@ -104,15 +110,18 @@ void MainWindow::readFromDb()
         return;
     }
 
+    qDebug("| %40s | %10lld ns |", "Before Reader query executed", time.elapsed());
     QSqlQuery q(selectQuery, readDb);
-    q.exec();
+    qDebug("Reader got:");
+    outpuQuery(q);
+    qDebug("| %40s | %10lld ns |", "After Reader query executed", time.elapsed());
     outpuQuery(q);
 }
 
 void MainWindow::writeToDb()
 {
     const int threadId = QThread::currentThreadId();
-    qDebug() << "WRITER:" << threadId;
+    qDebug("Writer thread: %10d", threadId);
 
     QString connectionName = QString ("Writer_%1").arg(threadId);
     QSqlDatabase writeDb = QSqlDatabase::cloneDatabase(mWorkDb, connectionName);
@@ -131,24 +140,65 @@ void MainWindow::writeToDb()
     SleeperThread::msSleep(21);
     writeDb.transaction();
     transInProcess = true;
-    SleeperThread::msSleep(21);
     QSqlQuery q(insertWriterInfo, writeDb);
+    SleeperThread::msSleep(1000);
+    qDebug("| %40s | %10lld ns |", "writeToDb query before commit", time.elapsed());
     writeDb.commit();
+    qDebug("| %40s | %10lld ns |", "writeToDb query after commit", time.elapsed());
     transInProcess = false;
 }
+
+void MainWindow::writeToDbOther()
+{
+    const int threadId = QThread::currentThreadId();
+    qDebug("Other writer thread: %10d", threadId);
+
+    // wait for transaction in writeToDb() begins
+    while (transInProcess==false)
+    {
+        qDebug("\t# Other writer is waiting, %10lld ns", time.elapsed());
+        SleeperThread::msSleep(7);
+    }
+    qDebug("\t# Other writer got transInProcess==true");
+
+    QString connectionName = QString ("OtherWriter_%1").arg(threadId);
+    QSqlDatabase writeDb = QSqlDatabase::cloneDatabase(mWorkDb, connectionName);
+
+    if (!writeDb.open()) {
+        qDebug() << "DB was not opened to write!";
+        return;
+    }
+
+    const QString insertWriterInfo = QString("INSERT INTO %1 (test_string) VALUES ('OTHER_WRITER at %2, %3')")
+            .arg(tableName)
+            .arg(QString::number(threadId))
+            .arg(QDateTime::currentDateTime().toString());
+
+    // insert some pause just to feel waiting process in Reader
+    writeDb.transaction();
+    QSqlQuery q(insertWriterInfo, writeDb);
+    qDebug("| %40s | %10lld ns |", "writeToDbOther query before commit", time.elapsed());
+    writeDb.commit();
+    qDebug("| %40s | %10lld ns |", "writeToDbOther query after commit", time.elapsed());
+}
+
 
 void MainWindow::startRace()
 {
     transInProcess = false;
-    QtConcurrent::run(this, &MainWindow::readFromDb);
     QtConcurrent::run(this, &MainWindow::writeToDb);
+    QtConcurrent::run(this, &MainWindow::writeToDbOther);
+    QtConcurrent::run(this, &MainWindow::readFromDb);
 
-    // probably all queries will be applied
-    SleeperThread::msSleep(600);
-    qDebug() << "Summary:";
+    // waiting all threads done
+    if (QThreadPool::globalInstance()->activeThreadCount()!=0)
+        QThreadPool::globalInstance()->waitForDone();
+    qDebug() << "All threads done.\nSUMMARY: ";
+
     QSqlQuery q(selectQuery, mWorkDb);
     q.exec();
     outpuQuery(q);
+
 }
 
 
